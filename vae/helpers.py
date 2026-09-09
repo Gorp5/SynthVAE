@@ -88,7 +88,7 @@ def visualize_latent_space(model, dataloader, device, NAME, sample_count=1000):
                 break
 
             x = sample[0].to(device)
-            _, y, _, _ = model(x)
+            _, y, _ = model(x)
             latents.append(y.cpu())
             # print(algorithm_label.shape) # DEBUG
             labels.append(torch.argmax(x[:, 176:176 + 32], dim=1).cpu())
@@ -112,8 +112,33 @@ def visualize_latent_space(model, dataloader, device, NAME, sample_count=1000):
     # plt.savefig(f"./models/{NAME}/latent_pca.png")
     # plt.show()
 
+def grouped_cross_entropy(logits, targets, c_lengths):
+    losses = []
+
+    start = 0
+    for length in c_lengths:
+        end = start + length
+
+        group_logits = logits[:, start:end]
+        group_targets = targets[:, start:end]
+
+        target_idx = group_targets.argmax(dim=1)
+
+        losses.append(
+            F.cross_entropy(
+                group_logits,
+                target_idx.long(),
+                reduction="mean"
+            )
+        )
+
+        start = end
+
+    return torch.stack(losses).mean()
+
 def vae_total_loss(pred, target, be_mask, ce_mask, mse_mask, alg_mask, mu, logvar, beta, mse_coeff=1, use_kl=True, alg_coeff=1):
     assert not torch.isnan(pred).any()
+    c_lengths = [4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 6]
 
     device = pred.device
     be_mask = be_mask.to(device)
@@ -131,25 +156,23 @@ def vae_total_loss(pred, target, be_mask, ce_mask, mse_mask, alg_mask, mu, logva
         bce_loss = torch.tensor(0.0, device=device)
 
     if mse_mask.any():
-        mse_loss = F.l1_loss(
+        metric_loss = F.l1_loss(
             pred[:, mse_mask],
             target[:, mse_mask],
             reduction="mean"
         ) * mse_coeff
 
     else:
-        mse_loss = torch.tensor(0.0, device=device)
+        metric_loss = torch.tensor(0.0, device=device)
 
     if ce_mask.any():
         ce_logits = pred[:, ce_mask]
         ce_targets = target[:, ce_mask]
 
-        ce_target_idx = ce_targets.argmax(dim=1)
-
-        ce_loss = F.cross_entropy(
+        ce_loss = grouped_cross_entropy(
             ce_logits,
-            ce_target_idx.long(),
-            reduction="mean"
+            ce_targets,
+            c_lengths
         )
     else:
         ce_loss = torch.tensor(0.0, device=device)
@@ -177,7 +200,18 @@ def vae_total_loss(pred, target, be_mask, ce_mask, mse_mask, alg_mask, mu, logva
         total_mse_vals.append(torch.sigmoid(pred[:, be_mask]) - target[:, be_mask])
 
     if ce_mask.any():
-        total_mse_vals.append(torch.sigmoid(pred[:, ce_mask]) - target[:, ce_mask])
+        ce_logits = pred[:, ce_mask]
+        ce_targets = target[:, ce_mask]
+
+        start = 0
+        for length in c_lengths:
+            end = start + length
+
+            probs = F.softmax(ce_logits[:, start:end], dim=-1)
+
+            total_mse_vals.append(probs - ce_targets[:, start:end])
+
+            start = end
 
     def mask_slices(mask):
         mask = mask.cpu().numpy().astype(int)
@@ -200,7 +234,8 @@ def vae_total_loss(pred, target, be_mask, ce_mask, mse_mask, alg_mask, mu, logva
 
     if total_mse_vals:
         total_mse_tensor = torch.cat(total_mse_vals, dim=1)
-        total_mse = torch.mean(total_mse_tensor**2)
+        total_mse = torch.abs(total_mse_tensor).mean()
+        # total_mse = torch.mean(total_mse_tensor**2)
     else:
         total_mse = torch.tensor(0.0, device=pred.device)
 
@@ -212,10 +247,10 @@ def vae_total_loss(pred, target, be_mask, ce_mask, mse_mask, alg_mask, mu, logva
     else:
         kl_loss = torch.tensor(0.0)
 
-    total_loss = mse_loss + bce_loss + ce_loss
+    total_loss = metric_loss + bce_loss + ce_loss
     total_loss *= alg_coeff
     total_loss += alg_loss
     total_loss += beta * kl_loss
 
-    return total_loss, mse_loss, ce_loss, bce_loss, beta * kl_loss, total_mse, alg_loss
+    return total_loss, metric_loss, ce_loss, bce_loss, beta * kl_loss, total_mse, alg_loss
 

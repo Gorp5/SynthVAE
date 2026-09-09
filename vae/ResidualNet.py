@@ -106,9 +106,9 @@ class VariationalAutoencoder(nn.Module):
             # reconstruct using decoder
             recon_x = self.decoder(z)
 
-            return recon_x, mean, logvar, ()
+            return recon_x, mean, logvar
         else:
             x1 = self.encoder(x)
             mean = self.fc_mu(x1)
             recon_x = self.decoder(mean)
-            return recon_x, None, None, torch.tensor(0)
+            return recon_x, mean, None

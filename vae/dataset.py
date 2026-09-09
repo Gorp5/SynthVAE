@@ -153,4 +153,4 @@ class SpectrogramStreamingDataset(Dataset):
         patch_path = self.patch_files[idx]
         patch = np.load(patch_path + ".npy")
 
-        return torch.from_numpy(spectrogram.copy()), torch.from_numpy(patch.copy())
+        return torch.from_numpy(spectrogram.copy()), torch.from_numpy(patch.copy()), idx

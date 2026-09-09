@@ -1,12 +1,8 @@
-from einops import rearrange, repeat
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from einops import rearrange
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.data.remote_backend_utils import num_nodes
 
 
 class MetricBiasUpdater(nn.Module):
@@ -14,18 +10,16 @@ class MetricBiasUpdater(nn.Module):
     def __init__(
         self,
         d_model: int,
-        geom_dim: int = 32,
+        geom_dim: int = 64,
         alpha: float = 1.0,
-        beta: float = 0.05,
+        beta: float = 0.1,
         clamp_value: float = 10.0,
         learnable_scales: bool = True,
     ):
         super().__init__()
 
-        # Projection into geometry space
         self.geom_proj = nn.Linear(d_model, geom_dim, bias=False)
 
-        # Scale parameters
         if learnable_scales:
             self.alpha = nn.Parameter(torch.tensor(alpha))
             self.beta = nn.Parameter(torch.tensor(beta))
@@ -33,39 +27,30 @@ class MetricBiasUpdater(nn.Module):
             self.register_buffer("alpha", torch.tensor(alpha))
             self.register_buffer("beta", torch.tensor(beta))
 
+
         self.clamp_value = clamp_value
 
-        # Initialize near zero so early training ≈ original model
+        self.geom_norm = nn.LayerNorm(geom_dim)
+
+        # Initialize near zero so early training = no geometry modulation
         nn.init.normal_(self.geom_proj.weight, mean=0.0, std=1e-3)
 
     def forward(self, H, B_prev):
-        """
-        H: [B, N, D]
-        B_prev: [B, N, N]
+        G = self.geom_proj(H)
 
-        Returns:
-            B_next: [B, N, N]
-        """
+        # G = self.geom_norm(G)
 
-        # Project into geometry space
-        G = self.geom_proj(H)  # [B, N, geom_dim]
-
-        # Compute pairwise squared distances
         # ||x - y||^2 = x^2 + y^2 - 2xy
-        G_sq = (G ** 2).sum(dim=-1, keepdim=True)  # [B, N, 1]
+        G_sq = (G ** 2).sum(dim=-1, keepdim=True)
 
-        # Pairwise distance matrix
         dist = G_sq + G_sq.transpose(1, 2) - 2 * torch.matmul(G, G.transpose(1, 2))
-        dist = torch.clamp(dist, min=0.0)  # numerical safety
+        dist = torch.clamp(dist, min=0.0)
 
-        # Convert to bias (negative distance like ALiBi style)
-        delta_B = -dist
+        sigma = dist.mean().detach()
+        delta_B = -torch.exp(-dist / (2 * sigma**2))
 
-        # Residual update
-        B_next = self.alpha * B_prev + self.beta * delta_B
-
-        # Clamp for logit stability
-        B_next = torch.clamp(B_next, -self.clamp_value, self.clamp_value)
+        B_next = B_prev + torch.tanh(self.beta) * delta_B
+        B_next = 10 * torch.tanh(B_next / 10)
 
         return B_next
 
@@ -140,7 +125,7 @@ class Attention(nn.Module):
         # sparsity
         self.sparsity_weight = sparsity_weight
 
-    def forward(self, x, alibi_bias=None, alg_film=None, return_attn_loss=False):
+    def forward(self, x, alibi_bias=None, alg_film=None):
         x = self.norm(x)
 
         if alg_film is not None:
@@ -158,16 +143,16 @@ class Attention(nn.Module):
 
         attn = self.attend(dots)
 
-        sparsity_loss = None
-        if return_attn_loss and self.sparsity_weight > 0.0:
-            eps = 1e-8
-            entropy = -(attn * (attn + eps).log()).sum(dim=-1)
-            sparsity_loss = entropy.mean() * self.sparsity_weight
+        # sparsity_loss = None
+        # if return_attn_loss and self.sparsity_weight > 0.0:
+        #     eps = 1e-8
+        #     entropy = -(attn * (attn + eps).log()).sum(dim=-1)
+        #     sparsity_loss = entropy.mean() * self.sparsity_weight
 
         out = torch.matmul(attn, v)
         out = rearrange(out, 'b h n d -> b n (h d)')
 
-        return self.to_out(out), sparsity_loss
+        return self.to_out(out)
 
 
 class Transformer(nn.Module):
@@ -183,17 +168,16 @@ class Transformer(nn.Module):
                 MetricBiasUpdater(d_model=dim,geom_dim=7, learnable_scales=True)
             ]))
 
-    def forward(self, x, alg_film=None, global_film=None, return_attn_loss=False, algorithm_distance_matricies=None):
+    def forward(self, x, alg_film=None, global_film=None, algorithm_distance_matricies=None):
         alibi_bias = algorithm_distance_matricies
         total_sparsity_loss = 0.0
 
         for attn, ff, alibi_bias_function in self.layers:
 
-            attn_out, sparsity_loss = attn(
+            attn_out = attn(
                 x,
                 alibi_bias,
                 alg_film=alg_film,
-                return_attn_loss=return_attn_loss,
             )
 
             x = attn_out + x
@@ -204,15 +188,9 @@ class Transformer(nn.Module):
 
             x = ff(x) + x
 
-            if sparsity_loss is not None:
-                total_sparsity_loss = total_sparsity_loss + sparsity_loss
-
             alibi_bias = alibi_bias_function(x, alibi_bias)
 
         x = self.norm(x)
-
-        if return_attn_loss:
-            return x, total_sparsity_loss, alibi_bias
 
         return x, alibi_bias
 
@@ -239,7 +217,8 @@ class GraphTransformerAutoencoderAlibi(nn.Module):
             masking=None,
             mask_ratio=0.05,
             hard_prediction=True,
-            geom_dim=16
+            geom_dim=16,
+            algorithm_index=176
     ):
         super().__init__()
 
@@ -319,9 +298,9 @@ class GraphTransformerAutoencoderAlibi(nn.Module):
         self.loss = nn.CrossEntropyLoss(reduction="mean")
         self.num_nodes = 6
 
-        self.algorithm_index = 176
+        self.algorithm_index = algorithm_index
         self.sparse = sparse
-        self.sparse_block = SparseAutoencoderBlock(latent_space, sparse_latent_space, rho=0.1)
+        # self.sparse_block = SparseAutoencoderBlock(latent_space, sparse_latent_space, rho=0.1)
         self.use_add = add_noise
 
     def reparameterize(self, mean, logvar):
@@ -377,7 +356,7 @@ class GraphTransformerAutoencoderAlibi(nn.Module):
                 min=0.0
             )
 
-            # optional: zero diagonal (cleaner)
+            # zero diagonal
             algorithm_distance_matricies = (
                     algorithm_distance_matricies -
                     torch.diag_embed(torch.diagonal(
@@ -493,14 +472,8 @@ class GraphTransformerAutoencoderAlibi(nn.Module):
 
         x_p = torch.cat([global_emb_enc, x_p], dim=1)
 
-        if return_attn_loss:
-            x_p += self.learned_embeddings.expand(B, x_p.shape[1], x_p.shape[2])
-            x_p, sparsity_loss_enc, biases = self.encoder(
-                x_p, return_attn_loss=True, algorithm_distance_matricies=algorithm_distance_matricies
-            )
-        else:
-            x_p += self.learned_embeddings.expand(B, x_p.shape[1], x_p.shape[2])
-            x_p, biases = self.encoder(x_p, algorithm_distance_matricies=algorithm_distance_matricies)
+        x_p += self.learned_embeddings.expand(B, x_p.shape[1], x_p.shape[2])
+        x_p, biases = self.encoder(x_p, algorithm_distance_matricies=algorithm_distance_matricies)
 
         biases = self.biases_to_token(biases.view(B, -1))
 
@@ -560,14 +533,8 @@ class GraphTransformerAutoencoderAlibi(nn.Module):
         x_p = self.from_latent(latent)
         x_p = x_p.unsqueeze(1).repeat(1, num_nodes + 1, 1)
 
-        if return_attn_loss:
-            x_p += self.learned_embeddings.expand(B, x_p.shape[1], x_p.shape[2])
-            x_p, sparsity_loss_dec, final_alibi = self.decoder(
-                x_p, return_attn_loss=True, algorithm_distance_matricies=algorithm_distance_matricies
-            )
-        else:
-            x_p += self.learned_embeddings.expand(B, x_p.shape[1], x_p.shape[2])
-            x_p, final_alibi = self.decoder(x_p, algorithm_distance_matricies=algorithm_distance_matricies)
+        x_p += self.learned_embeddings.expand(B, x_p.shape[1], x_p.shape[2])
+        x_p, final_alibi = self.decoder(x_p, algorithm_distance_matricies=algorithm_distance_matricies)
 
         global_hat = self.global_pred(x_p[:, 0])
         x_p = self.output_projection(x_p[:, 1:])
@@ -586,4 +553,4 @@ class GraphTransformerAutoencoderAlibi(nn.Module):
             global_hat[:, new_algo_index:],
         ], dim=1)
 
-        return x_recon, latent, logvar, sparse_loss
+        return x_recon, latent, logvar
