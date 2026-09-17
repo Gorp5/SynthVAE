@@ -26,7 +26,7 @@ There are four types:
                  "algorithm"   These values are the individual algorithm numbers, 0...31
                  "lfowave"   These values are 0 = Triangle, 1 = Sawtooth Down, 2 = Sawtooth Up (Ramp), 3 = Square, 4 = Sine, 5 = Sample and Hold
 
-"s", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "c", "c", "m", "m", "m", "m", "b", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "c", "c", "m", "m", "m", "m", "b", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "c", "c", "m", "m", "m", "m", "b", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "c", "c", "m", "m", "m", "m", "b", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "c", "c", "m", "m", "m", "m", "b", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "c", "c", "m", "m", "m", "m", "b", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "c", "m", "b", "m", "m", "m", "m", "b", "c", "m", "m"
+"s", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "c", "c", "m", "m", "m", "m", "b", "m", "m", | "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "c", "c", "m", "m", "m", "m", "b", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "c", "c", "m", "m", "m", "m", "b", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "c", "c", "m", "m", "m", "m", "b", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "c", "c", "m", "m", "m", "m", "b", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "c", "c", "m", "m", "m", "m", "b", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "c", "m", "b", "m", "m", "m", "m", "b", "c", "m", "m"
 
 
 PARAMETER MINIMUM VALUE

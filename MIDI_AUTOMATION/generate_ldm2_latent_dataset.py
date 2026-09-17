@@ -1,41 +1,112 @@
-import torch
+import os
 import numpy as np
+import torch
+import tqdm
 
-from diffusers import AudioLDM2Pipeline
+from diffusers import AutoencoderKL
 from vae.dataset import SpectrogramStreamingDataset
 
-def encode_mel(pipe, mel):
-    with torch.no_grad():
-        posterior = pipe.vae.encode(mel).latent_dist
-        latent = posterior.mode()
 
-    return latent * pipe.vae.config.scaling_factor
+SPEC_PATH = r"E:\SynthesizerDataset\single_note_dataset\compressed_specs"
+PATCH_PATH = r"E:\SynthesizerDataset\patches"
+LATENT_PATH = r"D:\SynthesizerDataset\ldm2_latents"
 
-if __name__ == "__main__":
-    model = AudioLDM2Pipeline.from_pretrained(
+BATCH_SIZE = 32       # Increase until VRAM becomes limiting
+NUM_WORKERS = 4       # Increase/decrease based on CPU/storage performance
+
+
+def main():
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA is required for reasonable performance.")
+
+    device = torch.device("cuda")
+
+    print("Using GPU:", torch.cuda.get_device_name())
+
+    # Useful when all spectrograms have identical dimensions
+    torch.backends.cudnn.benchmark = True
+
+    print("Loading AudioLDM2 VAE...")
+
+    vae = AutoencoderKL.from_pretrained(
         "cvssp/audioldm2-music",
-        torch_dtype=torch.float32,
+        subfolder="vae",
+        torch_dtype=torch.float16,
     )
 
-    dataset = SpectrogramStreamingDataset("E:\\SynthesizerDataset\\single_note_dataset\\compressed_specs\\",
-                                          "E:\\SynthesizerDataset\\patches\\")
+    vae = vae.to(device)
+    vae.eval()
 
-    latent_dataset_path = "E:\\SynthesizerDataset\\single_note_dataset\\ldm2_latents\\"
+    scaling_factor = vae.config.scaling_factor
 
-    has_cuda = torch.cuda.is_available()
-    device = torch.device("cuda" if has_cuda else "cpu")
-    if has_cuda:
-        print("Using GPU")
-    else:
-        print("Using CPU")
+    print("VAE scaling factor:", scaling_factor)
+
+    dataset = SpectrogramStreamingDataset(
+        SPEC_PATH,
+        PATCH_PATH,
+    )
 
     print("Total samples:", len(dataset))
 
-    train_dataloader = torch.utils.data.DataLoader(dataset, batch_size=8, shuffle=True)
+    loader_kwargs = {
+        "batch_size": BATCH_SIZE,
+        "shuffle": False,
+        "num_workers": NUM_WORKERS,
+        "pin_memory": True,
+    }
 
-    for batch in train_dataloader:
-        spec, patch, idx = batch
-        latents = encode_mel(model, spec)
+    # persistent_workers requires workers > 0
+    if NUM_WORKERS > 0:
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = 2
 
-        for latent in latents.to("cpu").detach().numpy():
-            np.save(f"{latent_dataset_path} + idx + .npy, latent)
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+        **loader_kwargs,
+    )
+
+    os.makedirs(LATENT_PATH, exist_ok=True)
+
+    with torch.inference_mode():
+
+        for specs, patches, idxs in tqdm.tqdm(
+            dataloader,
+            desc="Encoding",
+        ):
+
+
+            specs = specs.unsqueeze(1).to(
+                device=device,
+                dtype=torch.float16,
+                non_blocking=True,
+            )
+
+
+            latents = vae.encode(specs).latent_dist.mode()
+
+            latents.mul_(scaling_factor)
+            latents = latents.cpu().numpy()
+
+            # idxs should be something like [B, ...]
+            idxs = idxs.cpu().numpy().reshape(-1)
+
+
+            for idx, latent in zip(idxs, latents):
+
+                idx = int(idx)
+                path = os.path.join(
+                        LATENT_PATH,
+                        f"spec_{idx:07d}.npy",
+                    )
+
+                if os.path.exists(path):
+                    continue
+
+                np.save(
+                    path,
+                    latent,
+                )
+
+
+if __name__ == "__main__":
+    main()

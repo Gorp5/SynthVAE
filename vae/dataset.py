@@ -115,7 +115,7 @@ class SpectrogramStreamingDataset(Dataset):
             parts = file[6:-4].split("-")
             patch_id = parts[0]
 
-            self.patch_files[index] = os.path.join(self.patch_directory, "patch_" + patch_id)
+            self.patch_files[index] = os.path.join(self.patch_directory, f"patch_{int(patch_id):07d}")
             self.spectrograms[index] = os.path.join(self.spec_directory, file)
 
             index += 1
@@ -139,6 +139,7 @@ class SpectrogramStreamingDataset(Dataset):
 
     def __getitem__(self, idx):
         spectrogram_path = self.spectrograms[idx]
+
         with open(spectrogram_path, "rb") as f:
             compressed = f.read()
         try:
@@ -148,9 +149,59 @@ class SpectrogramStreamingDataset(Dataset):
             raise Exception(spectrogram_path)
 
         spectrogram = np.frombuffer(decompressed, dtype=np.float16)
+        # spectrogram = np.load(spectrogram_path)
         spectrogram = spectrogram.reshape(128, -1)
 
         patch_path = self.patch_files[idx]
         patch = np.load(patch_path + ".npy")
 
-        return torch.from_numpy(spectrogram.copy()), torch.from_numpy(patch.copy()), idx
+        return torch.from_numpy(spectrogram.copy()), torch.from_numpy(patch.copy())
+
+
+class SpectrogramLatentStreamingDataset(Dataset):
+    def __init__(self, spec_directory, patch_directory, num=-1):
+        self.spec_directory = spec_directory
+        self.patch_directory = patch_directory
+
+        files = os.listdir(self.spec_directory)
+
+        self.patch_files = {}
+        self.spectrograms = {}
+        index = 0
+
+        for file in sorted(files):
+            parts = file[6:-4].split("-")
+            patch_id = parts[0]
+
+            self.patch_files[index] = os.path.join(self.patch_directory, f"patch_{int(patch_id):07d}")
+            self.spectrograms[index] = os.path.join(self.spec_directory, file)
+
+            index += 1
+
+        new_specs = {}
+        index = 0
+        array_of_pairs = [(k, v) for k, v in self.spectrograms.items()]
+        random.shuffle(array_of_pairs)
+
+        if num > 0:
+            for key, val in array_of_pairs:
+                index += 1
+                new_specs[key] = val
+                if index > num:
+                    break
+
+            self.spectrograms = new_specs
+
+    def __len__(self):
+        return len(self.spectrograms.keys())
+
+    def __getitem__(self, idx):
+        spectrogram_path = self.spectrograms[idx]
+
+        spectrogram = np.load(spectrogram_path)
+
+        patch_path = self.patch_files[idx]
+        patch = np.load(patch_path + ".npy")
+
+        return torch.from_numpy(spectrogram.copy()), torch.from_numpy(patch.copy())
+
